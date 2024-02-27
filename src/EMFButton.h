@@ -1,3 +1,4 @@
+#ifdef EMFBUTTON
 #ifndef E_M_F_BUTTON_H
 #define E_M_F_BUTTON_H
 //#include "Arduino.h"
@@ -101,4 +102,5 @@ class EMFButton {
 
 void debugBootButton();
 
+#endif
 #endif

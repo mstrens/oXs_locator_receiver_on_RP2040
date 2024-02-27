@@ -23,9 +23,11 @@
  */
 #ifndef SSD1306Ascii_h
 #define SSD1306Ascii_h
-#include "Arduino.h"
+//#include "Arduino.h"
+#include "stdio.h"
 #include "SSD1306init.h"
 #include "fonts/allFonts.h"
+#include "Print.h"
 //------------------------------------------------------------------------------
 /** SSD1306Ascii version */
 #define SDD1306_ASCII_VERSION 1.2.2
@@ -67,19 +69,6 @@
 /** Write to display RAM with possible buffering. */
 #define SSD1306_MODE_RAM_BUF 2
 //-----------------------------------------------------------------------------
-/**
- * @brief Reset the display controller.
- *
- * @param[in] rst Reset pin number.
- */
-inline void oledReset(uint8_t rst) {
-  pinMode(rst, OUTPUT);
-  digitalWrite(rst, LOW);
-  delay(10);
-  digitalWrite(rst, HIGH);
-  delay(10);
-}
-//------------------------------------------------------------------------------
 /**
  * @class SSD1306Ascii
  * @brief SSD1306 base class

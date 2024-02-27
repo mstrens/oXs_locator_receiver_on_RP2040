@@ -1,12 +1,14 @@
-#include "lora.h"
 #include "hardware/spi.h"
 #include "tools.h"
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "config.h"
-#include "param.h"
+#include "lora_receiver.h"
+
+//#include <avr/pgmspace.h>
 
 
+//LORA use pin 10, 11,12 and 13 (= PB2 to PB5)
 // At oXs side, the principle is to set Lora device in continuous receive mode
 // In a loop, we look if a packet has been received (if so, it is one byte long with the Tx power for next transmit)
 // When oXs get this byte, it transmits immediately RSSI, SNR, and GPS data (0 if no GPS) and GPS precision and then go back to receive mode 
@@ -20,6 +22,9 @@
                                                           // bit6=0 = do not access FSK registers
                                                           // bit3= LowfrequencyModeOn; 0=access to HF test reg; 1=access to LF test register
                                                           // bits2-0=Mode; 000=sleep, 001=standby, 011=Transmit, 101=Receive continous, 110=Receive single
+#define LORA_REG_FRF_MSB                            0x06  //frequency (in steps of 61.035 Hz)
+#define LORA_REG_FRF_MID                            0x07  //frequency
+#define LORA_REG_FRF_LSB                            0x08  //frequency
 #define LORA_REG_PA_CONFIG                          0x09  //power amplifier source and value eg. 0x8F for 17dbm on PA_boost
                                                           // bit 7 = 1 means PA_BOOST is used; min +2,max 17dBm (or 20 with 1%); 0= FRO pin = min -4,max 14 dBm
                                                           // bits 6-4 = MaxPowerPmax = 10.8 + 0.6MaxPower
@@ -113,39 +118,37 @@
 #define LORA_TO_INIT 0           // device must be initialized
 #define LORA_IN_SLEEP 1          // wait a delay and set lora in recieve continous mode
 #define LORA_IN_RECEIVE 2             // wait that a package has been received or a max delay; if package has been received,Tx power changes, update Tx power, change mode to LORA_TO_TRANSMIT
-#define LORA_TO_TRANSMIT 3           //fill lora with data to be send and ask for sending (but do not wait), change mode to LORA_WAIT_END_OF_TRANSMIT
+#define LORA_START_TO_TRANSMIT 3           //fill lora with data to be send and ask for sending (but do not wait), change mode to LORA_WAIT_END_OF_TRANSMIT
 #define LORA_WAIT_END_OF_TRANSMIT 4   //wait that pakage has been sent (or wait max x sec)
 
-#define TX_FRF_MSB   0xC0 // F / 32E6 * 256 * 256 * 8
+#define TX_FRF_MSB   0xC0   // F / 32E6 * 256 * 256 * 8
 #define TX_FRF_MID   0x00   
 #define TX_FRF_LSB   0x00
 
-#define RX_FRF_MSB   0xC0 
-#define RX_FRF_MID   0x00  
+#define RX_FRF_MSB   0xC0
+#define RX_FRF_MID   0x00   
 #define RX_FRF_LSB   0x00
 
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-uint8_t loraRxPacketRssi ;
-uint8_t loraRxPacketSnr ;
-uint8_t loraRxPacketType ;
-uint8_t loraRxPacketTxPower ;
-uint8_t loraState = 0 ;
+
+uint8_t oXsGpsPdop ;    // gps precision sent by oxs
+uint8_t oXsLastGpsDelay ; // delay since last gps fix at oxs side
+uint8_t oXsPacketRssi ;   // RSSI of last packet received by oXs
+
+uint32_t loraMaxEndTransmitMillis ; // transmit has to be done before this delay
+
+uint32_t loraLastPacketReceivedMillis ;
+uint32_t loraLastGpsPacketReceivedMillis ;
+int loraRxPacketRssi ;
+float loraRxPacketSnr ;
+int32_t lastGpsLon ; 
+int32_t lastGpsLat ;    
 
 bool locatorInstalled = false;
 
-
-extern uint32_t GPS_last_fix_millis ; // time when last fix has been received (used by lora locator) 
-extern int32_t GPS_last_fix_lon ;     // last lon when a fix has been received
-extern int32_t GPS_last_fix_lat ;     // last lat when a fix has been received
-extern uint16_t GPS_hdop ;
-
 extern CONFIG config;
-//#define PIN_SPI_CS   9
-//#define PIN_SPI_SCK  10
-//#define PIN_MOSI 11
-//#define PIN_MISO 12
 #define SPI_PORT spi1
 
 void initSpi(){     // configure the SPI
@@ -158,17 +161,15 @@ void initSpi(){     // configure the SPI
     gpio_init(config.pinSpiCs);
     gpio_set_dir(config.pinSpiCs, GPIO_OUT);
     gpio_put(config.pinSpiCs, 1);
-    
-//  DDRB |= (1<<2)|(1<<3)|(1<<5);    // SCK, MOSI and SS as outputs on PORTB (PB2,PB3,PB5)
-//  DDRB &= ~(1<<4);                 // MISO as input (PB4)
-//  PORTB |= (1<<2)  ;                // Set chip select high (PB2)
-  
-//  SPCR =  (1<<MSTR) |               // Set as Master, send most significant bit first (because bit is left on 0)
-//          (1<<SPR0) |               // divided clock by 16 (so 1mhz)
-//          (1<<SPE);                 // Enable SPI, disable interrupt (bit7 on 0)
-//  SPSR = 1 ;                        // Bit0 allows to multiply frequency by 2 (in master mode)
 
-    // here we can read a register (like the version ) to check if the module is connected
+  //DDRB |= (1<<2)|(1<<3)|(1<<5);    // SCK, MOSI and SS as outputs on PORTB (PB2,PB3,PB5)
+  //DDRB &= ~(1<<4);                 // MISO as input (PB4)
+  //PORTB |= (1<<2)  ;                // Set chip select high (PB2)
+  
+  //SPCR =  (1<<MSTR) |               // Set as Master, send most significant bit first (because bit is left on 0)
+  //        (1<<SPR0) |               // divided clock by 16
+  //        (1<<SPE);                 // Enable SPI, disable interrupt (bit7 on 0)
+  //SPSR = 1 ;                        // Bit0 allows to multiply frequency by 2 (in master mode)
     uint8_t loraVersion = loraReadRegister(LORA_REG_VERSION); 
     if( loraVersion != 0x12) {
         locatorInstalled = false;
@@ -198,12 +199,18 @@ uint8_t spiSend(uint8_t value){
 #define SPI_UNSELECT (gpio_put(config.pinSpiCs, 1)) // macro for unselecting LORA device  
 
 uint8_t loraSingleTransfer(uint8_t reg, uint8_t value) {  // only for internal use; Write and read one LORA register
-  uint8_t response;
+    uint8_t response;
   SPI_SELECT ;
   spi_write_blocking(SPI_PORT, &reg, 1);
   spi_write_read_blocking(SPI_PORT, &value, &response, 1);
   SPI_UNSELECT ;
   return response;
+  //uint8_t response;
+  //SPI_SELECT ;
+  //spiSend(reg);
+  //response = spiSend(value);
+  //SPI_UNSELECT ;
+  //return response;
 }
 
 void loraWriteRegister(uint8_t reg, uint8_t value) {   // write a LORA register, discard the read value
@@ -219,11 +226,13 @@ void loraReadRegisterBurst( uint8_t reg, uint8_t* dataIn, uint8_t numBytes) {
   uint8_t readReg = reg  & 0x7f; 
   spi_write_blocking(SPI_PORT, &readReg, 1);
   spi_read_blocking (SPI_PORT, 0, dataIn, numBytes);
+  SPI_UNSELECT ;
+  //SPI_SELECT ;
   //spiSend(reg & 0x7f);
   //for(size_t n = 0; n < numBytes; n++) {
   //      dataIn[n] = spiSend(0x00);
   //}
-  SPI_UNSELECT ;
+  //SPI_UNSELECT ;
 }
 
 void loraWriteRegisterBurst( uint8_t reg, uint8_t* dataOut, uint8_t numBytes) {
@@ -231,72 +240,39 @@ void loraWriteRegisterBurst( uint8_t reg, uint8_t* dataOut, uint8_t numBytes) {
   uint8_t writeReg = reg | 0x80; 
   spi_write_blocking(SPI_PORT, &writeReg, 1);
   spi_write_blocking(SPI_PORT, dataOut, numBytes); 
+  SPI_UNSELECT ;
+  //SPI_SELECT ;
   //spiSend(reg | 0x80);
   //for(size_t n = 0; n < numBytes; n++) {
   //      spiSend(dataOut[n]);
   //}
-  SPI_UNSELECT ;
+  //SPI_UNSELECT ;
 }
 
+#define NEXT_TRANSMIT_TIME 1000  // wait 1000 msec max for a packet being sent
+#define RECEIVE_TIME 700  // wait 700 msec max for a packet being received
 
-
-#define SLEEP_TIME 55000 // sleep during 55 sec
-#define SHORT_RECEIVE_TIME 5000  // wait 5 sec for a packet
-#define LONG_RECEIVE_TIME 60000  // stay in receive for 1 min after receiving a packet
-
-void loraHandle(){   // this function is called from main.cpp only when pinSpiCs is not equal to 255
+uint8_t  loraHandle(){ 
+  uint8_t returnCode = 0 ; // just for debugging (= 1 is we are just transmitting)
   uint8_t loraIrqFlags ;
+  static uint8_t loraState = 0 ;
   static uint32_t loraStateMillis ;
-  //static uint32_t receiveMillis ;
+  static uint32_t loraNextTransmitMillis = 0;
+  
   uint32_t currentMillis = millisRp() ;
-  //printf("%i\n",loraState);
-  //printf("%u\n",loraStateMillis ) ;
-  switch (loraState) { 
+  switch (loraState) {
     case  LORA_TO_INIT :
         initSpi();   // init spi
         loraSetup() ; // init lora with some set up that need to be done only once
-        loraState = LORA_IN_SLEEP ;
-        loraStateMillis = currentMillis + SLEEP_TIME ;
-        printf("End of init\n") ;
+        loraState = LORA_START_TO_TRANSMIT ;
         break ;
-    case  LORA_IN_SLEEP :
-        if (currentMillis > loraStateMillis ){ 
-          //printf("End of sleep; enter receive mode for 5 sec\n");
-          printf("Li ");
-          loraRxOn(); 
-          loraState = LORA_IN_RECEIVE ; 
-          loraStateMillis = currentMillis + SHORT_RECEIVE_TIME ;
-        }
-        break;    
-    case  LORA_IN_RECEIVE :
-        // check if a packet has been received with a correct CRC
-        loraIrqFlags = loraReadRegister(LORA_REG_IRQ_FLAGS);
-        if ( loraIrqFlags & IRQ_RX_DONE_MASK  ) {
-          if ( loraIrqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) {
-            printf("wrong crc received\n") ;
-            loraRxOn() ; // restart reading in continous mode if CRC is wrong (reset address and interrupt)
-          } else {
-              loraReadPacket() ; // read the data in fifo (type and TxPower) and Rssi+SNR 
-              loraInSleep() ;
-              loraState = LORA_TO_TRANSMIT;
-              //printf("packet received\n") ;
-                printf("Re ");
-          }
-        } else if (currentMillis > loraStateMillis) {
-           //printf("receive timeout; go to sleep\n") ;
-            printf("Sl \n");
-           loraInSleep() ;
-           loraState = LORA_IN_SLEEP;
-           loraStateMillis = currentMillis + SLEEP_TIME ;
-        }
-        break;
-    case  LORA_TO_TRANSMIT :
-        loraFillTxPacket() ; // set mode to standby, fill fifo with data to be sent (6 bytes)  
-        loraTxOn(loraRxPacketTxPower) ; // set TxOn  (adjust frequency, number of bytes, Txpower, start Tx)  // set lora in transmit mode
-        loraStateMillis = currentMillis + 400 ; // start a timeout ; normally sending is done in less than 200msec
+    case  LORA_START_TO_TRANSMIT :
+        loraFillTxPacket() ; // set mode to standby, fill fifo with data to be sent (2 bytes)  
+        loraTxOn(0x15) ; // set TxOn  (adjust frequency, number of bytes, Txpower = 15=max, start Tx)  // set lora in transmit mode
+        loraNextTransmitMillis = currentMillis + NEXT_TRANSMIT_TIME ; // setup next transmit time
+        loraMaxEndTransmitMillis = currentMillis + 200 ;  // Transmission must be done within this time
         loraState = LORA_WAIT_END_OF_TRANSMIT ;
-        //printf("packet redy for sending\n") ;
-        printf("Se "); 
+        printf("transmit one packet\n") ; // to debug
         break;
     case  LORA_WAIT_END_OF_TRANSMIT :
         // check if transmit is done or if timeout occurs
@@ -304,21 +280,43 @@ void loraHandle(){   // this function is called from main.cpp only when pinSpiCs
         // else, if timeOut, go in sleep for the SLEEP_TIME
         loraIrqFlags = loraReadRegister(LORA_REG_IRQ_FLAGS);
         if ( loraIrqFlags & IRQ_TX_DONE_MASK ) {
-            //printf("packet has been sent; go to receive for 60sec\n") ;
-            printf("Es\n");
             loraRxOn();
             loraState = LORA_IN_RECEIVE ; 
-            loraStateMillis = currentMillis + LONG_RECEIVE_TIME ;
-        } else if ( currentMillis > loraStateMillis ) {
-            printf("transmit timeout; go to sleep for 55sec\n") ;
-            loraInSleep() ;
-            loraState = LORA_IN_SLEEP;
-            loraStateMillis = currentMillis + SLEEP_TIME ;
-        }
-        
-        break;
+            loraStateMillis = currentMillis + RECEIVE_TIME ; // normally wait a reply within 700 msec
+            returnCode = 1 ;  // 1 means that packet has been sent
 
+        } else if ( currentMillis > loraMaxEndTransmitMillis  ) { // loraStateMillis
+            printf("Packet not sent within the delay\n") ;
+            loraInSleep() ;
+            loraState = LORA_IN_SLEEP ;
+        }
+        break;
+    case  LORA_IN_SLEEP :
+        if (currentMillis > loraNextTransmitMillis ){ 
+          loraState = LORA_START_TO_TRANSMIT ; 
+        }
+        break;    
+    case  LORA_IN_RECEIVE :
+        // check if a packet has been received with a correct CRC
+        loraIrqFlags = loraReadRegister(LORA_REG_IRQ_FLAGS);
+        if ( loraIrqFlags & IRQ_RX_DONE_MASK  ) {
+          if ( loraIrqFlags & IRQ_PAYLOAD_CRC_ERROR_MASK) {
+            loraInSleep() ;
+            loraState = LORA_IN_SLEEP; 
+          } else {
+              loraReadPacket() ; // read the data in fifo 6 bytes 
+              loraInSleep() ;
+              loraState = LORA_IN_SLEEP;
+              returnCode=2;
+          }
+        } else if (currentMillis > loraStateMillis) {   // back to sleep if we did not receive a packet within the expected time
+           loraInSleep() ;
+           loraState = LORA_IN_SLEEP ;
+        }
+        break;
+    
     } // end of switch
+    return returnCode ;
 }
 
 void loraSetup() {         // parameters that are set only once
@@ -345,7 +343,7 @@ void loraSetup() {         // parameters that are set only once
                                                           // bit2=AgcAutoOn; 1=LNA gain set by internal AGCloop instead of by register LnaGain
 }
 
-void loraTxOn(uint8_t txPower){                           // if TX power <= 15, do not use the boost
+void loraTxOn(uint8_t txPower){
   loraWriteRegister(LORA_REG_OP_MODE,  0x80 | LORA_STANDBY);
   if ( txPower <= 15) {
     loraWriteRegister(LORA_REG_PA_CONFIG, 0x80 | txPower) ; // use PA_boost (power is from 2 up to 17dBm
@@ -358,7 +356,7 @@ void loraTxOn(uint8_t txPower){                           // if TX power <= 15, 
   loraWriteRegister(LORA_REG_FRF_MID, TX_FRF_MID);      
   loraWriteRegister(LORA_REG_FRF_LSB, TX_FRF_LSB);
   loraWriteRegister(LORA_REG_IRQ_FLAGS, 0xFF);       //reset interrupt flags
-  loraWriteRegister(LORA_REG_PAYLOAD_LENGTH,6);      // set payload on 6 (because it is the same time on air as 5
+  loraWriteRegister(LORA_REG_PAYLOAD_LENGTH,2);      // set payload on 6 (because it is the same time on air as 5
   loraWriteRegister(LORA_REG_OP_MODE,  0x80 | LORA_TX);  
 }
 
@@ -370,7 +368,7 @@ void loraRxOn(){
   loraWriteRegister(LORA_REG_FRF_MID, RX_FRF_MID);      
   loraWriteRegister(LORA_REG_FRF_LSB, RX_FRF_LSB);
   loraWriteRegister(LORA_REG_IRQ_FLAGS, 0xFF);       //reset interrupt flags
-  loraWriteRegister(LORA_REG_PAYLOAD_LENGTH,2);      // set payload on 6 (because it is the same time on air as 5
+  loraWriteRegister(LORA_REG_PAYLOAD_LENGTH,6);      // set payload on 6 (because it is the same time on air as 5
   loraWriteRegister(LORA_REG_OP_MODE,  0x80 | LORA_RXCONTINUOUS); 
 }
 
@@ -378,73 +376,57 @@ void loraInSleep(){
   loraWriteRegister(LORA_REG_OP_MODE,  0x80);
 }  
 
-void loraReadPacket()            // read a packet with 2 bytes ; PacketType and PacketTxPower
-{
-  loraRxPacketRssi = loraReadRegister( LORA_REG_PKT_RSSI_VALUE ); // we should substract 157 but this is done on the receiver side
-  loraRxPacketSnr = loraReadRegister( LORA_REG_PKT_SNR_VALUE );
-  loraWriteRegister(LORA_REG_FIFO_ADDR_PTR, 0);        //set RX FIFO ptr
-  SPI_SELECT ;       // start of read burst on fifo
-  spiSend(LORA_REG_FIFO);                //address for fifo
-  loraRxPacketType = spiSend(0);
-  loraRxPacketTxPower = spiSend(0);
-  SPI_UNSELECT ;
-  //printf("Rssi=%i Snr=%i Type=%i  pow=%i\n", loraRxPacketRssi , loraRxPacketSnr, loraRxPacketType , loraRxPacketTxPower ) ;
-  //printf("Rssi=%i \n", loraRxPacketRssi);
-}
-
-
-void loraFillTxPacket() {
-  // data to be sent are type of packet, Long, Lat, Gps accuracy, rssi, snr, nbr of min since last GPS
+void loraReadPacket() {            // read a packet with 6 bytes ; 
   // in order to stay with 6 bytes per packet, we will send 1 byte with
   //         Bit 7/ 0 = Long, 1=Lat ; this is type of packet
   //         Bit 6/3 = GPS accuracy 0= very good; 15 = bad (we discard décimal); it is gps_HDOP/128, if >15, then becomes 15
-  //         Bit 2/0/= gps oldier than than x sec....1h; 0 = no GPS (yet)
+  //         Bit 2 = gps oldier than than 1h
+  //         Bit 1 = oldier than 10 min
+  //         Bit 0 = oldier than 1 min
   //         Then there is one byte with Rssi and 4 bytes for long/lat (or replaced by 00 if GPS is unavailable)
   //         Note: gps_last_fix_lon and lat are filled with last value when a fix was available and if a fix has never been available they are filled with 0
-  uint8_t loraTxBuffer[6] ;
-  static uint8_t packetType = 0 ;
-  uint16_t temp16 = 0 ;
-  uint8_t temp8  = 0 ;
-  int32_t gpsPos = 0 ;
-  packetType = (~packetType ) & 0x80 ;                  // reverse first bit
-#if defined( A_GPS_IS_CONNECTED ) && ( A_GPS_IS_CONNECTED == YES)
-  temp16 = (GPS_hdop >> 7) ;  // Divide by 128 instead of 100 to go faster and keep only 4 bytes
-  if ( temp16 > 0x0F) temp16 = 0x0F ;
-  packetType |= (temp16 << 3 ) ; // shift in pos 3 to 6
-  if ( GPS_last_fix_millis > 0 ) { // if we receive at least one fix then we calculate the nelapsed time 
-    temp16 = ( millis() - GPS_last_fix_millis) >> 16 ; // to save bytes, we divide millisec by 1024
-    if ( temp16 > 3515 ) {
-      temp8 = 6 ; // more than 1 h (3515 = 3600000/1024 
-    } else if ( temp16 > 585 ) {
-      temp8 = 5 ; // more than 10 min (585 = 600000/1024
-    } else if ( temp16 > 59 ) {
-      temp8 = 4 ; // more than 1 min (59 = 60000/1024
-    } else if ( temp16 > 10 ) {
-      temp8 = 3 ; // more than 10 sec (10 = 10000/1024
-    } else if ( temp16 > 1 ) {
-      temp8 = 2 ; // more than 1 sec (1 = 1000/1024
-    } else {
-      temp8 = 1 ; // less than 1 sec
-    }
+
+  uint8_t loraRxBuffer[6] ;
+  uint8_t oXsPacketType ; // specify if oXs packet is long or lat
+  int32_t oXsGpsLonLat ;    // lon or lat sent by gps
+  
+  loraLastPacketReceivedMillis = millisRp() ;
+  loraRxPacketRssi = loraReadRegister( LORA_REG_PKT_RSSI_VALUE )- 157;
+  loraRxPacketSnr = loraReadRegister( LORA_REG_PKT_SNR_VALUE ) * 0.25
+  ;
+  loraWriteRegister(LORA_REG_FIFO_ADDR_PTR, 0);        //set RX FIFO ptr
+  loraWriteRegister(LORA_REG_OP_MODE, 0x80 | LORA_STANDBY) ; //  set mode in standby (to read FIFO)
+  loraReadRegisterBurst( LORA_REG_FIFO , loraRxBuffer, 6) ; // read the 6 bytes in lora fifo
+  oXsPacketType = (loraRxBuffer[0] >> 7 ) ; // bit 7 gives the type of gps data
+  oXsGpsLonLat = (((uint32_t) loraRxBuffer[2] ) << 24) | (((uint32_t) loraRxBuffer[3] ) << 16) | (((uint32_t) loraRxBuffer[4] ) << 8) | ((uint32_t) loraRxBuffer[5] ) ; 
+  if (oXsGpsLonLat != 0 ) {
+      loraLastGpsPacketReceivedMillis = loraLastPacketReceivedMillis ;
+      if (  oXsPacketType ) {
+        lastGpsLat = oXsGpsLonLat ;
+      } else {
+        lastGpsLon = oXsGpsLonLat ;
+      }
   }
-#endif
-  loraTxBuffer[0] = packetType | temp8 ;
-  loraTxBuffer[1] = loraRxPacketRssi ; // RSSI value of last packet
-#if defined( A_GPS_IS_CONNECTED ) && ( A_GPS_IS_CONNECTED == YES)
-  if (packetType & 0x80) {
-      gpsPos = GPS_last_fix_lat ;
-  } else {
-    gpsPos = GPS_last_fix_lon ;
+  oXsGpsPdop =  (loraRxBuffer[0] >> 3 ) & 0x0F ; // bit 6/3 gives the type of gps precision (normally it is in 0.01 but we put it in 1/128 for faster conversion and we loose decimal)
+  oXsLastGpsDelay = (loraRxBuffer[0]  ) & 0x07 ; // code in 3 bits of the time enlapsed since previous GPS fix at oXs side
+  oXsPacketRssi =  loraRxBuffer[1] ; // RSSI of last byte received by oXS
+
+  for (int i = 0; i < 128; i++) {
+    printf("%x %x\n", i , loraReadRegister(i));
   }
-#endif
-  loraTxBuffer[2] = gpsPos >> 24 ;
-  loraTxBuffer[3] = gpsPos >> 16 ;
-  loraTxBuffer[4] = gpsPos >> 8 ;
-  loraTxBuffer[5] = gpsPos ;
-   
-  loraWriteRegister(LORA_REG_OP_MODE, 0x80 | LORA_STANDBY) ; //  set mode in standby ( to write FIFO)
-  loraWriteRegister(LORA_REG_FIFO_ADDR_PTR, 0x80 );        // set FifoAddrPtr to 80 (base adress of byte to transmit)
-  loraWriteRegisterBurst( LORA_REG_FIFO , loraTxBuffer, 6) ; // write the 6 bytes in lora fifo
+
+  
 }
 
-//#endif
+void loraFillTxPacket() {
+  // data to be sent are only 2 byte; the first one is requested Txpower to be used at oXs side
+  uint8_t loraTxBuffer[2] ;
+  loraTxBuffer[0] = 0x55 ; // Type of packet ; currently not used
+  loraTxBuffer[1] = 0x0F ; // 0x0F = max power (for first tests; it could be reduced based on RSSI at this side in order to increase the location possibility without GPS 
+  loraWriteRegister(LORA_REG_OP_MODE, 0x80 | LORA_STANDBY) ; //  set mode in standby (to write FIFO)
+  loraWriteRegister(LORA_REG_FIFO_ADDR_PTR, 0x80 );        // set FifoAddrPtr to 80 (base adress of byte to transmit)
+  loraWriteRegisterBurst( LORA_REG_FIFO , loraTxBuffer, 2) ; // write the 2 bytes in lora fifo
+}
+
+
+

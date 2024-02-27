@@ -1,3 +1,4 @@
+#ifdef USE_EMFButton
 #include "EMFButton.h"
 #include "tools.h"
 #include "pico/stdlib.h"
@@ -151,3 +152,5 @@ void debugBootButton(){
     //  printf("hold\n"); // repeat when hold
     //}
 }    
+
+#endif

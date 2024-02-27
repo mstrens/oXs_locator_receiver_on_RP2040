@@ -1,37 +1,20 @@
-
+#ifdef USE_PARAM_CPP
 #include "param.h"
 #include "pico/stdlib.h"
 #include "config.h"
 #include "stdio.h"
-#include "MS5611.h"
-#include "SPL06.h"
-#include "BMP280.h"
-#include "ads1115.h"
-#include "ms4525.h"
-#include "xgzp6897D.h"
-#include "sdp3x.h"
 #include <string.h>
 #include <ctype.h>
-#include "gps.h"
 #include "hardware/flash.h"
 #include <inttypes.h>
 #include "stdlib.h"
 #include  "hardware/sync.h"
 #include "hardware/watchdog.h"
-#include "crsf_out.h"
-#include "pico/multicore.h"
-#include "mpu.h"
-#include "pico/util/queue.h"
+//#include "pico/multicore.h"
+//#include "pico/util/queue.h"
 #include "tools.h"
-#include "jeti.h"
-#include "exbus.h"
 #include "hardware/pio.h"  // needed for sbus_out_pwm.h
-#include "sbus_out_pwm.h"  // needed to print the PWM values
-#include "sequencer.h"
 #include <errno.h>   // used by strtol() to check for errors 
-#include "gyro.h"
-#include "crsf_in.h"
-#include "sbus_in.h"
 
 // commands could be in following form:
 // C1 = 0/15  ... C16 = 0/15
@@ -61,16 +44,7 @@
 uint8_t cmdBuffer[CMD_BUFFER_LENTGH];
 uint16_t cmdBufferPos = 0;
 
-extern GPS gps;
-extern sbusFrame_s sbusFrame;
-extern uint32_t lastRcChannels;
-
-
 CONFIG config;
-uint8_t debugTlm = 'N';
-uint8_t debugSbusOut = 'N';
-
-uint8_t pinCount[30] = {0};
 
 // for sequencer
 int tempIntTable[10]; // temporary table to store n integers converted from the serial buffer (starting from pvalue)
@@ -2632,3 +2606,4 @@ bool getPid(uint8_t mode){  // get all pid parameters for one mode; return true 
     }
     return true;            
 } 
+#endif

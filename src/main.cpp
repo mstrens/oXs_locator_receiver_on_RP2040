@@ -40,10 +40,11 @@ uint8_t ledState = STATE_NO_SIGNAL;
 uint8_t prevLedState = STATE_NO_SIGNAL;
 
 uint32_t lastBlinkMillis;
+uint32_t lastDisplayMillis;
 
 extern uint8_t oXsGpsPdop ;    // gps precision sent by oxs
 extern uint8_t oXsLastGpsDelay ; // delay since last gps fix at oxs side
-extern uint8_t oXsPacketRssi ;   // RSSI of last packet received by oXs
+extern int oXsPacketRssi ;   // RSSI of last packet received by oXs
 
 extern uint32_t loraLastPacketReceivedMillis ;
 uint32_t prevLoraLastPacketReceivedMillis ;
@@ -133,33 +134,22 @@ void setupConfig(){
     #if _pinSpiMISO != 8 && _pinSpiMISO != 12 && _pinSpiMiso != 24 &&_pinSpiMiso != 28
     #error "Wrong GPIO for MISO"
     #endif
+    config.pinLed = _pinLed;
     configIsValid = true;
 }
 
 void setColorState(){    // set the colors based on the RF link
     lastBlinkMillis = millisRp(); // reset the timestamp for blinking
     switch (ledState) {
-        case STATE_OK:
+        case STATE_NO_SIGNAL:
+            setRgbColorOn(0, 0, 10); //blue
+            break;
+        case STATE_NO_RECENT_RECEIVE:
+            setRgbColorOn(10, 0, 0); //red
+            break;
+        case STATE_RECENTLY_RECEIVED:
             setRgbColorOn(0, 10, 0); //green
-            break;
-        case STATE_PARTLY_OK:
-            setRgbColorOn(10, 5, 0); //yellow
-            break;
-        case STATE_FAILSAFE:
-            setRgbColorOn(0, 0, 10); //blue
-            break;
-        case STATE_GYRO_CAL_MIXER_NOT_DONE:
-            setRgbColorOn(10, 0, 0); //red
-            break;
-        case STATE_GYRO_CAL_MIXER_DONE:
-            setRgbColorOn(10, 5, 0); //yellow
-            break;
-        case STATE_GYRO_CAL_LIMIT:
-            setRgbColorOn(0, 0, 10); //blue
-            break;
-        default:
-            setRgbColorOn(10, 0, 0); //red
-            break;     
+            break;    
     }
 }
 
@@ -195,6 +185,16 @@ void handleBootButton(){
     }
 }
 */
+void displayDelaySinceLastPacket(){
+    oled.setCursor(0, 5) ; oled.print("Last pack rec. ");
+    uint32_t delayLastPacketReceived ;
+    delayLastPacketReceived = millisRp() - loraLastPacketReceivedMillis ;
+    if ( delayLastPacketReceived < 60000 )  {
+        oled.print( delayLastPacketReceived /1000); oled.print( " s   ") ;
+    } else {
+        oled.print( delayLastPacketReceived /60000); oled.print( " m   ") ;
+  }
+}  
 
 void fillOled() {
   static uint8_t countToDebug = 0 ; // just to debug
@@ -205,7 +205,7 @@ void fillOled() {
 //  oled.setCursor(0,2) ;
 //  oled.print("Rx= ");
 //  oled.print(countRxToDebug) ;
-  
+  lastDisplayMillis= millisRp();
   
   if (lastGpsLon >= 0) {
     oled.print("E ");
@@ -233,14 +233,7 @@ void fillOled() {
   oled.setCursor(0, 3) ; oled.print("oXs Rssi = "); oled.print(oXsPacketRssi);  oled.clearToEOL() ;
   //oled.setCursor(0, 4) ; oled.print("Last gps rec.  "); oled.print( ( millis() - loraLastPacketReceivedMillis ) /1000); oled.print( " s") ; oled.clearToEOL() ;
   
-  oled.setCursor(0, 5) ; oled.print("Last pack rec. ");
-  uint32_t delayLastPacketReceived ;
-  delayLastPacketReceived = millisRp() - loraLastPacketReceivedMillis ;
-  if ( delayLastPacketReceived < 60000 )  {
-    oled.print( delayLastPacketReceived /1000); oled.print( " s   ") ;
-  } else {
-    oled.print( delayLastPacketReceived /60000); oled.print( " m   ") ;
-  }
+  displayDelaySinceLastPacket();
   oled.setCursor(0, 7) ; oled.print("RSSI = "); oled.print(loraRxPacketRssi); oled.print( "   ") ;
   oled.setCursor(75, 7) ;
   oled.print("SNR = "); oled.print(loraRxPacketSnr); oled.clearToEOL() ;
@@ -255,6 +248,7 @@ void setup() {
   //bool clockChanged; 
   //clockChanged = set_sys_clock_khz(133000, false);
   set_sys_clock_khz(133000, false);
+  //#define DEBUG
   #ifdef DEBUG
   uint16_t counter = 10;                      // after an upload, watchdog_cause_reboot is true.
   //if ( watchdog_caused_reboot() ) counter = 0; // avoid the UDC wait time when reboot is caused by the watchdog   
@@ -281,49 +275,37 @@ void setup() {
   setRgbColorOn(0,0,10);  // switch to blue during the setup of different sensors/pio/uart
 
   if (configIsValid) { // continue with setup only if config is valid 
-        watchdog_enable(3500, 0); // require an update once every 500 msec
+    //    watchdog_enable(3500, 0); // require an update once every 500 msec
         setupI2c();      // setup I2C
         oled.begin(&Adafruit128x64, I2C_ADDRESS);
         oled.setFont(System5x7);
         oled.clear();
-        oled.print("Hello world!");
+        oled.print("Wait for a connection");
   } 
-  setRgbColorOn(10,0,0); // set color on red (= no signal)
-  // to detect end of setup
+  setRgbColorOn(0,0,10); // set color on blue (= no signal)
   //printf("end of set up\n");
-  //while (1) {watchdog_update();};
 }
 
 
 #define MAIN_LOOP 0 // used to measure the elapse time in debug
 void loop() {
-  //debugBootButton();
-    //startTimerUs(MAIN_LOOP);                            // start a timer to measure enlapsed time
-
     if ((configIsValid) and (configIsSaved)) {
       watchdog_update();
     }
-  //alarmTimerUs(MAIN_LOOP, 1000);    //  print a warning if enlapsed time exceed xx usec
-
   watchdog_update();
   
   //handleUSBCmd();  // process the commands received from the USB
   tud_task();      // I suppose that this function has to be called periodicaly
   if ( configIsValidPrev != configIsValid) {
     configIsValidPrev = configIsValid;
-    if ((configIsValid) and (configIsSaved)){
+    if ((configIsValid) ){
         blinking = true; // setRgbColorOn(0,10,0); // red , green , blue
     } else {
         blinking = false; // setRgbColorOn(10,0,0);
         setRgbOn();  
     }
   }
-  //printf("before handleBootButton\n");sleep_ms(100); 
-  //handleBootButton(); // check boot button; after double click, change LED to fix blue and next HOLD within 5 sec save the current channnels as Failsafe values
-  //printf("after handleBootButton\n");sleep_ms(100); 
-  //if (( bootButtonState == ARMED) || ( bootButtonState == SAVED)){
-  //  //setRgbColorOn(0, 0, 10); //blue
-  //} else if ( ledState != prevLedState){
+  
   if ( ledState != prevLedState){
     //printf(" %d\n ",ledState);
     prevLedState = ledState;
@@ -332,20 +314,16 @@ void loop() {
     toggleRgb();
     lastBlinkMillis = millisRp();
   }
+  
   //if (get_bootsel_button()) {
   //  printf("p\n");
   //} 
   //enlapsedTime(0);
-  //printf("end of loop\n");sleep_ms(100); 
   if (config.pinSpiCs != 255) {
       loraDebugCode = loraHandle();
-    if ( loraDebugCode ) fillOled() ; // this for debugging
-    if ( loraDebugCode == 1 ) countTxToDebug++ ;
-    if ( loraDebugCode == 2 ) countRxToDebug++ ; 
-    
     if ( loraLastPacketReceivedMillis != prevLoraLastPacketReceivedMillis ) { // if we receive a new packet, then print
         prevLoraLastPacketReceivedMillis = loraLastPacketReceivedMillis ;
-        
+        ledState = STATE_RECENTLY_RECEIVED;   // allow to change led color when a packet is received
         convertLonLat( lastGpsLon , lonDegree , lonMinute , lonSeconde , lonSecDec ) ; 
         //Serial.print("lonDegree back= ") ; Serial.println(lonDegree) ; 
         convertLonLat( lastGpsLat , latDegree , latMinute , latSeconde , latSecDec ) ;
@@ -358,12 +336,14 @@ void loop() {
         //Serial.print( " Lat=") ; Serial.print( latDegree ) ; Serial.print( "° ") ; Serial.print( latMinute ) ; Serial.print( "min ") ; Serial.print( latSeconde ) ; Serial.print( "sec ") ; Serial.print( latSecDec ) ;
         //Serial.println( " ") ;
     }
+    if ((( millisRp() - lastDisplayMillis ) > 1000) and (loraLastPacketReceivedMillis > 0)) { //update screen at least once per sec
+        displayDelaySinceLastPacket() ; // even when no packet we update the enlapse time on the display
+        if ((millisRp() - loraLastPacketReceivedMillis) > 3000) {
+            ledState = STATE_NO_RECENT_RECEIVE;
+        }
+    }
   }  
 }
-
-
-
-
 
 int main(){
   setup();

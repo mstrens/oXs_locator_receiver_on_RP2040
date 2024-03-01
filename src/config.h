@@ -1,13 +1,13 @@
 #pragma once
 
 #include <stdint.h>
-#define VERSION "0.0.2"
+#define VERSION "0.0.3"
 
 //#define DEBUG  // force the MCU to wait for some time for the USB connection; still continue if not connected
 
 // --------- Default Gpio's -------------
 
-#define _pinSpiCs   15   // 0/29
+#define _pinSpiCs   14   // 0/29
 #define _pinSpiSck  26   // 10, 14, 26 (for spi1)  or 2, 6, 18, 22 (for spi0)
 #define _pinSpiMosi 27     // 11, 15, 27 (for spi1)  or 3, 7, 18, 23 (for spi0)
 #define _pinSpiMiso 28     // 8, 12, 24, 28 (for spi1) or 0, 4, 16, 20 (for spio)
@@ -32,6 +32,10 @@
 
 #define I2C_PORT i2c1              // do not change 
 
+// ------------- Lora Tx power --------------
+
+#define LORA_TX_POWER 15   // power to be used ; must be in range 0/15 (0=2db, 15=17db) because PA is always used
+
 
 // --------- Reserve for developer. ---------
 #define CONFIG_VERSION 8
@@ -52,11 +56,7 @@ struct CONFIG{
 };
 
 enum LEDState{
-    STATE_OK= 0,
-    STATE_PARTLY_OK,
-    STATE_FAILSAFE,
-    STATE_NO_SIGNAL,
-    STATE_GYRO_CAL_MIXER_NOT_DONE,
-    STATE_GYRO_CAL_MIXER_DONE,
-    STATE_GYRO_CAL_LIMIT,
+    STATE_NO_SIGNAL = 0,
+    STATE_NO_RECENT_RECEIVE,
+    STATE_RECENTLY_RECEIVED,
 };

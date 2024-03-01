@@ -66,22 +66,16 @@ If your use a power source of more than 5 Volt, then it could be that you have t
 
 ## ------------------ Led -------------------
 When a RP2040-Zero or RP2040-TINY is used, the firmware will handle a RGB led (internally connected to gpio16).
-* when config is wrong, led is red and always ON.
-* when config is valid, led is blinking and the color depends on RC channels being received ot not
-    * Red = Rc frames have nerver been received, Sbus and/or PWM signals are not generated.
-    * Blue = Sbus and/or PWM signals are based on failsafe values. Failsafe values are given by the receiver for Sbus or are configured in oXs for CRSF protocol
-    * Yellow/oranje = Sbus and/or PWM signals are based on a valid RC channels frame received from PRI or SEC source but the orther source does not provided a valid RC channels frame.
-    * blinking green = Sbus and/or PWM signals are based on valid RC channels frames (from one source; from both sources if both are foressen in the setup)
-* when "Boot" button is used for setting the failsafe values, led becomes blue and white (see above)
-
+* when led blinks, it means that program is running; otherwise receiver is blocked and must be resetted
+* color depends on the connection
+    * Blue = No connection has been establish
+    * Red = Connection has been establish but has been lost since more than 2 sec (display gives the enlapse time)
+    * Green = Connection is established.
+    
 Note: some users got a RP2040-zero or RP2040-TINY where red and green colors are inverted.
-If you got such a device and want to get the "normal" colors, you can enter a command LED=I to invert the 2 colors.
-
+If you got such a device and want to get the "normal" colors, you can change the config.h file to invert the 2 colors.
 
 Please note that other boards do not have a RGB led on gpio16 and so this does not applies.
-
-
-
 
 ## --------- Software -------------------
 This software has been developped using the RP2040 SDK provided by Rapsberry.
